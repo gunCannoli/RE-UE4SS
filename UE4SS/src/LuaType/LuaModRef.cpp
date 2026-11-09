@@ -55,6 +55,45 @@ namespace RC::LuaType
         });
     }
 
+    namespace
+    {
+        auto free_shared_lua_variable(RC::LuaMod::SharedLuaVariable& var) -> void
+        {
+            if (!var.value)
+            {
+                var.lua_type = LUA_TNIL;
+                return;
+            }
+            switch (var.lua_type)
+            {
+            case LUA_TBOOLEAN:
+                delete static_cast<bool*>(var.value);
+                break;
+            case LUA_TLIGHTUSERDATA:
+            case LUA_TUSERDATA:
+                delete static_cast<RC::LuaMod::SharedLuaVariable::UserdataContainer*>(var.value);
+                break;
+            case LUA_TNUMBER:
+                if (var.is_integer)
+                {
+                    delete static_cast<int64_t*>(var.value);
+                }
+                else
+                {
+                    delete static_cast<double*>(var.value);
+                }
+                break;
+            case LUA_TSTRING:
+                delete static_cast<std::string*>(var.value);
+                break;
+            default:
+                break;
+            }
+            var.value = nullptr;
+            var.lua_type = LUA_TNIL;
+        }
+    }
+
     template <LuaMadeSimple::Type::IsFinal is_final>
     auto LuaModRef::setup_member_functions(const LuaMadeSimple::Lua::Table& table) -> void
     {
@@ -71,65 +110,37 @@ Overloads:
             }
             auto variable_name = std::string{lua.get_string()};
 
-            RC::LuaMod::SharedLuaVariable* currently_stored_value{};
-            if (auto it = RC::LuaMod::m_shared_lua_variables.find(variable_name); it != RC::LuaMod::m_shared_lua_variables.end())
-            {
-                currently_stored_value = &it->second;
-            }
-
             auto type = lua_type(lua.get_lua_state(), 1);
+            void* new_value{};
+            bool is_integer{false};
+
             if (type == LUA_TNIL)
             {
-                RC::LuaMod::m_shared_lua_variables[variable_name] = RC::LuaMod::SharedLuaVariable{type, nullptr, false};
+                new_value = nullptr;
             }
             else if (type == LUA_TBOOLEAN)
             {
-                if (currently_stored_value && currently_stored_value->value)
-                {
-                    delete static_cast<bool*>(currently_stored_value->value);
-                    currently_stored_value->value = nullptr;
-                }
-                RC::LuaMod::m_shared_lua_variables[variable_name] = RC::LuaMod::SharedLuaVariable{type, new bool{lua.get_bool()}, false};
+                new_value = new bool{lua.get_bool()};
             }
             else if (type == LUA_TLIGHTUSERDATA)
             {
-                if (currently_stored_value && currently_stored_value->value)
-                {
-                    delete static_cast<RC::LuaMod::SharedLuaVariable::UserdataContainer*>(currently_stored_value->value);
-                    currently_stored_value->value = nullptr;
-                }
-                RC::LuaMod::m_shared_lua_variables[variable_name] =
-                        RC::LuaMod::SharedLuaVariable{type, new RC::LuaMod::SharedLuaVariable::UserdataContainer{lua_touserdata(lua.get_lua_state(), 1)}, false};
+                new_value = new RC::LuaMod::SharedLuaVariable::UserdataContainer{lua_touserdata(lua.get_lua_state(), 1)};
             }
             else if (type == LUA_TNUMBER)
             {
                 if (lua_isinteger(lua.get_lua_state(), 1))
                 {
-                    if (currently_stored_value && currently_stored_value->value)
-                    {
-                        delete static_cast<int64_t*>(currently_stored_value->value);
-                        currently_stored_value->value = nullptr;
-                    }
-                    RC::LuaMod::m_shared_lua_variables[variable_name] = RC::LuaMod::SharedLuaVariable{type, new int64_t{lua.get_integer()}, true};
+                    new_value = new int64_t{lua.get_integer()};
+                    is_integer = true;
                 }
                 else
                 {
-                    if (currently_stored_value && currently_stored_value->value)
-                    {
-                        delete static_cast<double*>(currently_stored_value->value);
-                        currently_stored_value->value = nullptr;
-                    }
-                    RC::LuaMod::m_shared_lua_variables[variable_name] = RC::LuaMod::SharedLuaVariable{type, new double{lua.get_number()}, false};
+                    new_value = new double{lua.get_number()};
                 }
             }
             else if (type == LUA_TSTRING)
             {
-                if (currently_stored_value && currently_stored_value->value)
-                {
-                    delete static_cast<std::string*>(currently_stored_value->value);
-                    currently_stored_value->value = nullptr;
-                }
-                RC::LuaMod::m_shared_lua_variables[variable_name] = RC::LuaMod::SharedLuaVariable{type, new std::string{lua.get_string()}, false};
+                new_value = new std::string{lua.get_string()};
             }
             else if (type == LUA_TTABLE)
             {
@@ -141,18 +152,12 @@ Overloads:
             }
             else if (type == LUA_TUSERDATA)
             {
-                if (currently_stored_value && currently_stored_value->value)
-                {
-                    delete static_cast<RC::LuaMod::SharedLuaVariable::UserdataContainer*>(currently_stored_value->value);
-                    currently_stored_value->value = nullptr;
-                }
                 auto& userdata = lua.get_userdata<LuaType::UE4SSBaseObject>();
                 std::string_view lua_object_name = userdata.get_object_name();
                 if (lua_object_name == "UObject" || lua_object_name == "UWorld" || lua_object_name == "AActor" || lua_object_name == "UClass" ||
                     lua_object_name == "UEnum" || lua_object_name == "UScriptStruct" || lua_object_name == "UStruct")
                 {
-                    RC::LuaMod::m_shared_lua_variables[variable_name] =
-                            RC::LuaMod::SharedLuaVariable{type, new RC::LuaMod::SharedLuaVariable::UserdataContainer{userdata.get_remote_cpp_object()}, false};
+                    new_value = new RC::LuaMod::SharedLuaVariable::UserdataContainer{userdata.get_remote_cpp_object()};
                 }
                 else
                 {
@@ -162,6 +167,15 @@ Overloads:
             else if (type == LUA_TTHREAD)
             {
                 lua.throw_error("Tried to set shared variable but the variable is unsupported type: 'thread'.");
+            }
+
+            {
+                std::lock_guard<std::mutex> guard{RC::LuaMod::m_shared_lua_variables_mutex};
+                if (auto it = RC::LuaMod::m_shared_lua_variables.find(variable_name); it != RC::LuaMod::m_shared_lua_variables.end())
+                {
+                    free_shared_lua_variable(it->second);
+                }
+                RC::LuaMod::m_shared_lua_variables[variable_name] = RC::LuaMod::SharedLuaVariable{type, new_value, is_integer};
             }
 
             return 0;
@@ -180,6 +194,7 @@ Overloads:
             }
             auto variable_name = std::string{lua.get_string()};
 
+            std::lock_guard<std::mutex> guard{RC::LuaMod::m_shared_lua_variables_mutex};
             if (auto it = RC::LuaMod::m_shared_lua_variables.find(variable_name); it != RC::LuaMod::m_shared_lua_variables.end())
             {
                 auto value = it->second.value;

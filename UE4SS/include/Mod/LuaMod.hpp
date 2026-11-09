@@ -166,6 +166,7 @@ namespace RC
         static inline bool m_is_processing_actions{};
         static inline GameThreadExecutionMethod m_default_game_thread_method{GameThreadExecutionMethod::EngineTick};
         // This is storage that persists through hot-reloads.
+        static inline std::mutex m_shared_lua_variables_mutex{};
         static inline std::unordered_map<std::string, SharedLuaVariable> m_shared_lua_variables{};
         static inline std::vector<FunctionHookData> m_custom_event_callbacks{};
         static inline std::vector<LuaCallbackData> m_load_map_pre_callbacks{};
