@@ -730,7 +730,8 @@ Overloads:
                 std::string error_overload_not_found{R"(
 No overload found for function 'UObject.ProcessConsoleExec'.
 Overloads:
-#1: ProcessConsoleExec(string Cmd, nil Reserved, UObject Executor))"};
+#1: ProcessConsoleExec(string Cmd)
+#2: ProcessConsoleExec(string Cmd, nil Reserved, UObject Executor))"};
 
                 const auto& lua_object = lua.get_userdata<SelfType>();
 
@@ -740,21 +741,20 @@ Overloads:
                 }
                 auto cmd = ensure_str(lua.get_string());
 
-                if (lua.get_stack_size() < 2)
+                Unreal::UObject* executor_ptr = nullptr;
+                if (lua.get_stack_size() >= 3)
                 {
-                    lua.throw_error(error_overload_not_found);
+                    lua.discard_value();
+                    if (lua.is_userdata())
+                    {
+                        auto executor = lua.get_userdata<LuaType::UObject>();
+                        executor_ptr = executor.get_remote_cpp_object();
+                    }
                 }
-                lua.discard_value();
-
-                if (!lua.is_userdata())
-                {
-                    lua.throw_error(error_overload_not_found);
-                }
-                auto executor = lua.get_userdata<LuaType::UObject>();
 
                 auto ar = Unreal::FOutputDevice{};
                 auto return_value =
-                        lua_object.get_remote_cpp_object()->ProcessConsoleExec(FromCharTypePtr<TCHAR>(cmd.c_str()), ar, executor.get_remote_cpp_object());
+                        lua_object.get_remote_cpp_object()->ProcessConsoleExec(FromCharTypePtr<TCHAR>(cmd.c_str()), ar, executor_ptr);
 
                 lua.set_bool(return_value);
                 return 1;
