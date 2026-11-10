@@ -79,9 +79,8 @@ namespace RC::FaultLog
         }
 
         // The Lua call stack of the state that last entered a C function (the mod that was running).
-        auto lua_stack(Buf& buf) -> void
+        auto lua_stack_of(Buf& buf, lua_State* L) -> void
         {
-            lua_State* L = LuaMadeSimple::active_lua_state();
             if (!L)
             {
                 buf.add("  lua: no active Lua call\n");
@@ -94,6 +93,11 @@ namespace RC::FaultLog
                 if (!lua_getinfo(L, "Sln", &ar)) break;
                 buf.add("  lua[%d]: %s:%d in %s %s\n", level, ar.short_src, ar.currentline, ar.namewhat ? ar.namewhat : "", ar.name ? ar.name : "?");
             }
+        }
+
+        auto lua_stack(Buf& buf) -> void
+        {
+            lua_stack_of(buf, LuaMadeSimple::active_lua_state());
         }
 
         // Name of an object (class name or own name), copied as plain ASCII; "<unreadable>" when the object is freed. The unsafe part runs under guard().
@@ -176,6 +180,32 @@ namespace RC::FaultLog
             write_raw(buf.data, buf.len);
         }
 
+        // Lua panic (an error with no protected call, then abort()): same file, same recent-operations list, the message of the Lua error and the Lua stack of the erroring thread.
+        auto panic_logger(lua_State* L, const char* message) -> void
+        {
+            Buf& buf = g_buf;
+            buf.len = 0;
+            SYSTEMTIME st{};
+            GetLocalTime(&st);
+            buf.add("[LUA-PANIC] %04d-%02d-%02d %02d:%02d:%02d.%03d thread=%lu: %s  (Lua is about to abort(): an error was raised with no pcall on the stack, often a mod whose main script failed but kept loops or hooks)
+", st.wYear,
+                    st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId(), message);
+            lua_stack_of(buf, L);
+            const uint64_t head = g_head.load(std::memory_order_relaxed);
+            const size_t count = head < ring_size ? static_cast<size_t>(head) : ring_size;
+            const size_t shown = count < 8 ? count : 8;
+            buf.add("  last %zu Lua->engine operations, newest first:
+", shown);
+            for (size_t i = 0; i < shown; ++i)
+            {
+                const Entry& e = g_ring[(head - 1 - i) % ring_size];
+                buf.add("    #%llu %s object=%p %s%s
+", static_cast<unsigned long long>(e.counter), e.kind == Kind::PropGet ? "get " : (e.kind == Kind::PropSet ? "SET " : "CALL"), e.object,
+                        e.kind == Kind::Call ? "function@" : "property=", e.kind == Kind::Call ? "(call)" : e.name);
+            }
+            write_raw(buf.data, buf.len);
+        }
+
         LONG CALLBACK vectored_handler(PEXCEPTION_POINTERS info)
         {
             const DWORD code = info->ExceptionRecord->ExceptionCode;
@@ -204,6 +234,7 @@ namespace RC::FaultLog
         MoveFileExW(path.c_str(), prev.c_str(), MOVEFILE_REPLACE_EXISTING);
         g_file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
         g_veh = AddVectoredExceptionHandler(1, vectored_handler);
+        LuaMadeSimple::set_panic_logger(&panic_logger);
     }
 
     auto note(Kind kind, const void* object, const void* aux, const wchar_t* name16, const char* name8) -> void
