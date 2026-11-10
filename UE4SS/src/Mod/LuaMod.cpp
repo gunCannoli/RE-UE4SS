@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <DynamicOutput/DynamicOutput.hpp>
+#include <FaultLog.hpp>
 #include <ExceptionHandling.hpp>
 #include <Helpers/Format.hpp>
 #include <Helpers/String.hpp>
@@ -121,6 +122,9 @@ namespace RC
     // The map is only touched under m_thread_actions_mutex.
     static std::atomic<bool> g_script_profile_enabled{false};
     static std::unordered_map<Unreal::UFunction*, uint32_t> g_script_profile{};
+    // Root-caller attribution (fork, 2026-11-09): for every counted call, the OUTERMOST Blueprint function of its script call chain (FFrame::PreviousFrame) gets the call.
+    // The callee counts name what is called; this names the function that started it (the trigger of a storm frame).
+    static std::unordered_map<Unreal::UFunction*, uint32_t> g_script_roots{};
 
     static auto perf_add(std::atomic<uint64_t>& counter, uint64_t amount = 1) -> void
     {
@@ -1299,8 +1303,50 @@ namespace RC
             if (!enable)
             {
                 g_script_profile.clear();
+                g_script_roots.clear();
             }
             return 0;
+        });
+
+        // UE4SSScriptProfileRoots(integer max): like UE4SSScriptProfileTake but for the ROOT callers (outermost Blueprint function of each call chain). Read-only:
+        // UE4SSScriptProfileTake clears both tables, so read the roots first.
+        lua.register_function("UE4SSScriptProfileRoots", [](const LuaMadeSimple::Lua& lua) -> int {
+            lua_State* L = lua.get_lua_state();
+            const auto max_entries = static_cast<int64_t>(lua_tointeger(L, 1));
+            std::vector<std::pair<Unreal::UFunction*, uint32_t>> entries{};
+            {
+                std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+                if (max_entries > 0)
+                {
+                    entries.assign(g_script_roots.begin(), g_script_roots.end());
+                }
+            }
+            std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+                return a.second > b.second;
+            });
+            if (max_entries > 0 && static_cast<int64_t>(entries.size()) > max_entries)
+            {
+                entries.resize(static_cast<size_t>(max_entries));
+            }
+            lua_createtable(L, static_cast<int>(entries.size()), 0);
+            int index{};
+            for (const auto& [function, calls] : entries)
+            {
+                const auto line = std::to_string(calls) + " " + to_string(function->GetFullName());
+                lua_pushstring(L, line.c_str());
+                lua_rawseti(L, -2, ++index);
+            }
+            return 1;
+        });
+
+        // UE4SSFaultStats(): faults (access violations seen by the fault logger, guarded ones included), caught (converted into Lua errors), stale_blocked (refused before they
+        // could fault because the UObject behind a Lua value was freed). Details of every fault: ue4ss_fault.log in the UE4SS working directory.
+        lua.register_function("UE4SSFaultStats", [](const LuaMadeSimple::Lua& lua) -> int {
+            const auto stats = FaultLog::stats();
+            lua.set_integer(static_cast<int64_t>(stats.faults));
+            lua.set_integer(static_cast<int64_t>(stats.caught));
+            lua.set_integer(static_cast<int64_t>(stats.stale_blocked));
+            return 3;
         });
 
         // UE4SSScriptProfileTake(integer max): returns an array of "<calls> <function full name>" strings, most called first,
@@ -1316,6 +1362,7 @@ namespace RC
                     entries.assign(g_script_profile.begin(), g_script_profile.end());
                 }
                 g_script_profile.clear();
+                g_script_roots.clear();
             }
             std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
                 return a.second > b.second;
@@ -6444,6 +6491,22 @@ Overloads:
             if (Unreal::UFunction* profiled_function = Stack.Node())
             {
                 ++g_script_profile[profiled_function];
+                Unreal::UFunction* root_function = profiled_function;
+                Unreal::FFrame* frame = &Stack;
+                for (int depth = 0; depth < 64; ++depth)
+                {
+                    Unreal::FFrame* previous = frame->PreviousFrame();
+                    if (!previous)
+                    {
+                        break;
+                    }
+                    frame = previous;
+                    if (Unreal::UFunction* node = frame->Node())
+                    {
+                        root_function = node;
+                    }
+                }
+                ++g_script_roots[root_function];
             }
         }
 

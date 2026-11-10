@@ -7,6 +7,7 @@
 #include <type_traits>
 
 #include <Constructs/Generator.hpp>
+#include <FaultLog.hpp>
 #include <DynamicOutput/DynamicOutput.hpp>
 #include <Helpers/String.hpp>
 #include <Common.hpp>
@@ -820,25 +821,62 @@ Overloads:
                 return;
             }
 
-            Unreal::FName property_name = Unreal::FName(member_name, Unreal::FNAME_Find);
-            Unreal::FField* field = LuaCustomProperty::StaticStorage::property_list.find_or_nullptr(object, member_name);
-
-            if (!field)
+            // Fault diagnostics and stale-object protection (fork, 2026-11-09). A wrapper that outlives its UObject is truthy in Lua; reading or writing through it used to
+            // be a native access violation that pcall cannot catch (crash UECC-6BAF9948: Flee wrote MaxWalkSpeed on a freed movement component). The probe refuses the
+            // access with a Lua error, and the guard below turns a fault that slips past it into one.
+            if constexpr (std::is_same_v<StringType::value_type, wchar_t>)
             {
-                Unreal::UStruct* obj_as_struct = nullptr;
-                if constexpr (std::is_base_of_v<Unreal::UStruct, DerivedType>)
-                {
-                    // Avoid runtime Cast/IsA here; this path is hit in __index for hot code paths.
-                    obj_as_struct = static_cast<Unreal::UStruct*>(object);
-                }
-                if (!obj_as_struct)
-                {
-                    obj_as_struct = object->GetClassPrivate();
-                }
-                field = obj_as_struct->FindProperty(property_name);
+                FaultLog::note(operation == Operation::Set ? FaultLog::Kind::PropSet : FaultLog::Kind::PropGet, object, nullptr, member_name.c_str(), nullptr);
+            }
+            if (!FaultLog::object_readable(object))
+            {
+                FaultLog::count_stale_blocked();
+                throw std::runtime_error{std::string{"stale UObject: the object behind this Lua value was freed ("} + (operation == Operation::Set ? "writing" : "reading") + " property '" +
+                                         to_string(member_name) + "'); check IsValid() on the owner and the component right before the access"};
             }
 
-            handle_unreal_property_value(operation, lua, object, property_name, field);
+            struct GuardContext
+            {
+                Operation operation;
+                const LuaMadeSimple::Lua* lua;
+                DerivedType* object;
+                const StringType* member_name;
+            };
+            GuardContext guard_context{operation, &lua, object, &member_name};
+            unsigned long fault_code{};
+            const bool completed = FaultLog::guard(
+                    [](void* raw) {
+                        auto* context = static_cast<GuardContext*>(raw);
+                        Unreal::FName property_name = Unreal::FName(*context->member_name, Unreal::FNAME_Find);
+                        Unreal::FField* field = LuaCustomProperty::StaticStorage::property_list.find_or_nullptr(context->object, *context->member_name);
+
+                        if (!field)
+                        {
+                            Unreal::UStruct* obj_as_struct = nullptr;
+                            if constexpr (std::is_base_of_v<Unreal::UStruct, DerivedType>)
+                            {
+                                // Avoid runtime Cast/IsA here; this path is hit in __index for hot code paths.
+                                obj_as_struct = static_cast<Unreal::UStruct*>(context->object);
+                            }
+                            if (!obj_as_struct)
+                            {
+                                obj_as_struct = context->object->GetClassPrivate();
+                            }
+                            field = obj_as_struct->FindProperty(property_name);
+                        }
+
+                        handle_unreal_property_value(context->operation, *context->lua, context->object, property_name, field);
+                    },
+                    &guard_context,
+                    &fault_code);
+            if (!completed)
+            {
+                FaultLog::count_caught();
+                throw std::runtime_error{std::format("native access violation (0x{:X}) while {} property '{}' of a UObject; the access was cancelled and converted into this Lua error",
+                                                     fault_code,
+                                                     operation == Operation::Set ? "writing" : "reading",
+                                                     to_string(member_name))};
+            }
         }
     };
 
