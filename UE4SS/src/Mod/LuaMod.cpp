@@ -1,7 +1,9 @@
 #define NOMINMAX
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <map>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -125,6 +127,8 @@ namespace RC
     // Root-caller attribution (fork, 2026-11-09): for every counted call, the OUTERMOST Blueprint function of its script call chain (FFrame::PreviousFrame) gets the call.
     // The callee counts name what is called; this names the function that started it (the trigger of a storm frame).
     static std::unordered_map<Unreal::UFunction*, uint32_t> g_script_roots{};
+    // Same walk, keyed by the top three frames of the chain (root, its callee, that callee's callee): names WHICH branch of a big event graph does the work.
+    static std::map<std::array<Unreal::UFunction*, 3>, uint32_t> g_script_paths{};
 
     static auto perf_add(std::atomic<uint64_t>& counter, uint64_t amount = 1) -> void
     {
@@ -1304,6 +1308,7 @@ namespace RC
             {
                 g_script_profile.clear();
                 g_script_roots.clear();
+                g_script_paths.clear();
             }
             return 0;
         });
@@ -1339,6 +1344,41 @@ namespace RC
             return 1;
         });
 
+        // UE4SSScriptProfilePaths(integer max): top call paths "<calls> root > callee > callee's callee" (the first three frames from the outermost Blueprint function down).
+        // Read-only, like UE4SSScriptProfileRoots.
+        lua.register_function("UE4SSScriptProfilePaths", [](const LuaMadeSimple::Lua& lua) -> int {
+            lua_State* L = lua.get_lua_state();
+            const auto max_entries = static_cast<int64_t>(lua_tointeger(L, 1));
+            std::vector<std::pair<std::array<Unreal::UFunction*, 3>, uint32_t>> entries{};
+            {
+                std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+                if (max_entries > 0)
+                {
+                    entries.assign(g_script_paths.begin(), g_script_paths.end());
+                }
+            }
+            std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+                return a.second > b.second;
+            });
+            if (max_entries > 0 && static_cast<int64_t>(entries.size()) > max_entries)
+            {
+                entries.resize(static_cast<size_t>(max_entries));
+            }
+            lua_createtable(L, static_cast<int>(entries.size()), 0);
+            int index{};
+            for (const auto& [path, calls] : entries)
+            {
+                std::string line = std::to_string(calls);
+                for (Unreal::UFunction* function : path)
+                {
+                    line += function ? (" > " + to_string(function->GetFullName())) : std::string{" > -"};
+                }
+                lua_pushstring(L, line.c_str());
+                lua_rawseti(L, -2, ++index);
+            }
+            return 1;
+        });
+
         // UE4SSFaultStats(): faults (access violations seen by the fault logger, guarded ones included), caught (converted into Lua errors), stale_blocked (refused before they
         // could fault because the UObject behind a Lua value was freed). Details of every fault: ue4ss_fault.log in the UE4SS working directory.
         lua.register_function("UE4SSFaultStats", [](const LuaMadeSimple::Lua& lua) -> int {
@@ -1363,6 +1403,7 @@ namespace RC
                 }
                 g_script_profile.clear();
                 g_script_roots.clear();
+                g_script_paths.clear();
             }
             std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
                 return a.second > b.second;
@@ -6491,9 +6532,11 @@ Overloads:
             if (Unreal::UFunction* profiled_function = Stack.Node())
             {
                 ++g_script_profile[profiled_function];
-                Unreal::UFunction* root_function = profiled_function;
+                Unreal::UFunction* chain[64];
+                int chain_size = 0;
+                chain[chain_size++] = profiled_function;
                 Unreal::FFrame* frame = &Stack;
-                for (int depth = 0; depth < 64; ++depth)
+                for (int depth = 0; depth < 63; ++depth)
                 {
                     Unreal::FFrame* previous = frame->PreviousFrame();
                     if (!previous)
@@ -6503,10 +6546,11 @@ Overloads:
                     frame = previous;
                     if (Unreal::UFunction* node = frame->Node())
                     {
-                        root_function = node;
+                        chain[chain_size++] = node;
                     }
                 }
-                ++g_script_roots[root_function];
+                ++g_script_roots[chain[chain_size - 1]];
+                ++g_script_paths[std::array<Unreal::UFunction*, 3>{chain[chain_size - 1], chain_size >= 2 ? chain[chain_size - 2] : nullptr, chain_size >= 3 ? chain[chain_size - 3] : nullptr}];
             }
         }
 
