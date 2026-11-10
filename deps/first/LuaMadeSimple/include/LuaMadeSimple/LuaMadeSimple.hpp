@@ -786,6 +786,8 @@ namespace RC::LuaMadeSimple
     };
 
     RC_LMS_API auto handle_error(lua_State*, const std::string&) -> const std::string;
+    // The Lua state that is inside a C function call right now (set by process_lua_function), nullptr outside. Used by the fault logger to print the Lua stack of a crash.
+    RC_LMS_API auto active_lua_state() -> lua_State*;
     RC_LMS_API auto throw_error(lua_State*, const std::string&) -> void;
     [[nodiscard]] RC_LMS_API auto new_state() -> Lua&;
 

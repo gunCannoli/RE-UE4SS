@@ -1,5 +1,6 @@
 #define NOMINMAX
 
+#include <FaultLog.hpp>
 #include <Windows.h>
 
 #ifdef TEXT
@@ -205,6 +206,9 @@ namespace RC
             }
 
             m_crash_dumper.set_full_memory_dump(settings_manager.CrashDump.FullMemoryDump);
+
+            // Fork: fault log (vectored handler) and stale-object guard; independent of the CrashDump setting (the game's own crash reporter usually wins that one).
+            FaultLog::install(m_working_directory.c_str());
 
             m_debugging_gui.set_gfx_backend(settings_manager.Debug.GraphicsAPI);
 

@@ -1165,8 +1165,33 @@ namespace RC::LuaMadeSimple
         return out_message;
     }
 
+    static lua_State* s_active_lua_state = nullptr;
+
+    auto active_lua_state() -> lua_State*
+    {
+        return s_active_lua_state;
+    }
+
+    namespace
+    {
+        // Restores the previous active state on every exit path that runs destructors (a C++ throw); a longjmp-style Lua error leaves the entry until the next call overwrites it.
+        struct ActiveStateScope
+        {
+            lua_State* previous;
+            explicit ActiveStateScope(lua_State* current) : previous(s_active_lua_state)
+            {
+                s_active_lua_state = current;
+            }
+            ~ActiveStateScope()
+            {
+                s_active_lua_state = previous;
+            }
+        };
+    } // namespace
+
     auto process_lua_function(lua_State* lua_state) -> int
     {
+        ActiveStateScope active_state_scope{lua_state};
         const size_t func_id = lua_tointeger(lua_state, lua_upvalueindex(1));
         const Lua::LuaFunctionType func_type = static_cast<Lua::LuaFunctionType>(lua_tointeger(lua_state, lua_upvalueindex(2)));
 

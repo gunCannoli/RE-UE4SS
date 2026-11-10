@@ -1,3 +1,4 @@
+#include <FaultLog.hpp>
 #include <Helpers/Casting.hpp>
 #include <LuaType/LuaAActor.hpp>
 #include <LuaType/LuaCustomProperty.hpp>
@@ -100,6 +101,12 @@ namespace RC::LuaType
 
         Unreal::UFunction* func{};
         Unreal::UObject* calling_context{};
+        // Fork (2026-11-09): a UFunction / object wrapper that outlived its UObject must raise a Lua error here, not fault inside IsA / ProcessEvent.
+        if (!FaultLog::object_readable(lua_object.get_remote_cpp_object()))
+        {
+            FaultLog::count_stale_blocked();
+            lua.throw_error("[UFunction::call_ufunction_from_lua] stale UObject: the object this function is called on was freed; check IsValid() right before the call");
+        }
         bool is_first_userdata_function = lua_object.get_remote_cpp_object()->IsA<Unreal::UFunction>();
 
         if (is_first_userdata_function)
@@ -282,6 +289,12 @@ namespace RC::LuaType
         // It's assumed that everything is safe here
         // Every part of the system is designed to throw when stuff goes wrong
         // This code should never be executed in those cases
+        if (!FaultLog::object_readable(calling_context))
+        {
+            FaultLog::count_stale_blocked();
+            lua.throw_error("[UFunction::call_ufunction_from_lua] stale UObject: the calling context was freed; check IsValid() right before the call");
+        }
+        FaultLog::note(FaultLog::Kind::Call, calling_context, func, nullptr, nullptr);
         calling_context->ProcessEvent(func, dynamic_unreal_function_data);
 
         // If there are any 'Out' params, update the table that they correspond to
