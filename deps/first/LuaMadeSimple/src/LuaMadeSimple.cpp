@@ -1084,9 +1084,12 @@ namespace RC::LuaMadeSimple
         }
     }
 
+    static int lms_panic(lua_State* L);      // defined below, next to the panic logger
+
     auto new_state() -> Lua&
     {
         auto new_lua_state = luaL_newstate();
+        lua_atpanic(new_lua_state, lms_panic);
         return *lua_instances.emplace(new_lua_state, std::make_unique<Lua>(new_lua_state)).first->second;
     }
 
@@ -1166,6 +1169,25 @@ namespace RC::LuaMadeSimple
     }
 
     static lua_State* s_active_lua_state = nullptr;
+
+    static void (*s_panic_logger)(lua_State*, const char*) = nullptr;
+
+    auto set_panic_logger(void (*logger)(lua_State*, const char*)) -> void
+    {
+        s_panic_logger = logger;
+    }
+
+    // lua_atpanic handler: Lua calls it when an error is raised with no protected call on the stack and then abort()s (crash UECC-C2B2F522, 2026-11-10: "Abort signal received").
+    // It writes the message and the Lua stack to ue4ss_fault.log through the logger the fault logger installed.
+    static int lms_panic(lua_State* L)
+    {
+        const char* message = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "(error object is not a string)";
+        if (s_panic_logger)
+        {
+            s_panic_logger(L, message ? message : "?");
+        }
+        return 0;
+    }
 
     auto active_lua_state() -> lua_State*
     {
