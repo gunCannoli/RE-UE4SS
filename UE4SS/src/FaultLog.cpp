@@ -187,20 +187,17 @@ namespace RC::FaultLog
             buf.len = 0;
             SYSTEMTIME st{};
             GetLocalTime(&st);
-            buf.add("[LUA-PANIC] %04d-%02d-%02d %02d:%02d:%02d.%03d thread=%lu: %s  (Lua is about to abort(): an error was raised with no pcall on the stack, often a mod whose main script failed but kept loops or hooks)
-", st.wYear,
+            buf.add("[LUA-PANIC] %04d-%02d-%02d %02d:%02d:%02d.%03d thread=%lu: %s  (Lua is about to abort(): an error was raised with no pcall on the stack, often a mod whose main script failed but kept loops or hooks)\n", st.wYear,
                     st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId(), message);
             lua_stack_of(buf, L);
             const uint64_t head = g_head.load(std::memory_order_relaxed);
             const size_t count = head < ring_size ? static_cast<size_t>(head) : ring_size;
             const size_t shown = count < 8 ? count : 8;
-            buf.add("  last %zu Lua->engine operations, newest first:
-", shown);
+            buf.add("  last %zu Lua->engine operations, newest first:\n", shown);
             for (size_t i = 0; i < shown; ++i)
             {
                 const Entry& e = g_ring[(head - 1 - i) % ring_size];
-                buf.add("    #%llu %s object=%p %s%s
-", static_cast<unsigned long long>(e.counter), e.kind == Kind::PropGet ? "get " : (e.kind == Kind::PropSet ? "SET " : "CALL"), e.object,
+                buf.add("    #%llu %s object=%p %s%s\n", static_cast<unsigned long long>(e.counter), e.kind == Kind::PropGet ? "get " : (e.kind == Kind::PropSet ? "SET " : "CALL"), e.object,
                         e.kind == Kind::Call ? "function@" : "property=", e.kind == Kind::Call ? "(call)" : e.name);
             }
             write_raw(buf.data, buf.len);
