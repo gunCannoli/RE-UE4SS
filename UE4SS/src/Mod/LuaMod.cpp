@@ -8,6 +8,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -57,6 +58,7 @@
 #include <Unreal/UGameViewportClient.hpp>
 #include <Unreal/UKismetSystemLibrary.hpp>
 #include <Unreal/UObjectGlobals.hpp>
+#include <Unreal/UObjectHashTables.hpp>
 #include <Unreal/UPackage.hpp>
 #include <Unreal/UnrealVersion.hpp>
 #include <UnrealCustom/CustomProperty.hpp>
@@ -83,6 +85,46 @@ namespace RC
         // Explicitly using the top of the stack (-1) since that's where 'getglobal' puts stuff
         auto& lua_object = lua.get_userdata<LuaType::LuaModRef>(-1);
         return lua_object.get_remote_cpp_object();
+    }
+
+    // Object lookup by path for the Lua API (StaticFindObject, RegisterHook, UnregisterHook).
+    // Once the engine hash tables are live, a full path ("/Package/Path.Object[:Sub]") resolves through them outer by
+    // outer, and a miss there is final: the object is not loaded. UObjectGlobals::StaticFindObject falls through to a
+    // scan of the whole object array on a miss, which is only needed for short names and nested outers. That scan takes
+    // 40-50 ms in a large open world, so a script asking for something that is not loaded (an optional class, a montage,
+    // a Blueprint function of a level that is streamed out) cost a visible frame hitch per call.
+    static auto find_object_for_lua(Unreal::UClass* object_class, Unreal::UObject* in_outer, const StringType& name, bool exact_class = false) -> Unreal::UObject*
+    {
+        if (!in_outer && name.find(STR('/')) != StringType::npos && Unreal::UnrealInitializer::ShouldUseHashTables())
+        {
+            return Unreal::FUObjectHashTables::StaticFindObjectByPath(object_class, name.c_str(), exact_class);
+        }
+        return Unreal::UObjectGlobals::StaticFindObject(object_class, in_outer, name, exact_class);
+    }
+
+    // Counters for the two hooks that run for every Blueprint function call and for every constructed object, and the time
+    // the Lua side spends inside the engine tick hook. Read from Lua with GetUE4SSPerfCounters().
+    // Written on the game thread or under m_thread_actions_mutex: a plain load + store keeps locked instructions out of the hot paths.
+    struct LuaPerfCounters
+    {
+        std::atomic<uint64_t> script_hook_calls{};
+        std::atomic<uint64_t> script_hook_matches{};
+        std::atomic<uint64_t> construct_calls{};
+        std::atomic<uint64_t> construct_matches{};
+        std::atomic<uint64_t> engine_tick_ns{};
+        std::atomic<uint64_t> engine_tick_calls{};
+    };
+    static LuaPerfCounters g_lua_perf{};
+
+    // Script call profile: while enabled from Lua (UE4SSScriptProfile), script_hook counts the calls of each Blueprint function.
+    // UE4SSScriptProfileTake(n) returns the n most called ones and clears the counts. Off by default: one relaxed load per call.
+    // The map is only touched under m_thread_actions_mutex.
+    static std::atomic<bool> g_script_profile_enabled{false};
+    static std::unordered_map<Unreal::UFunction*, uint32_t> g_script_profile{};
+
+    static auto perf_add(std::atomic<uint64_t>& counter, uint64_t amount = 1) -> void
+    {
+        counter.store(counter.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
     }
 
     static auto get_function_name_without_prefix(const StringType& function_full_name) -> StringType
@@ -1237,6 +1279,62 @@ namespace RC
         lua.register_function("println", LuaLibrary::global_println);
         lua.register_function("LoadExport", LuaLibrary::load_export);
 
+        // Returns 6 integers: script hook calls, script hook matches, constructed objects seen, constructed objects with a
+        // listener, nanoseconds spent in the engine tick hook (all Lua tick / delayed work), engine tick hook calls.
+        lua.register_function("GetUE4SSPerfCounters", [](const LuaMadeSimple::Lua& lua) -> int {
+            lua.set_integer(static_cast<int64_t>(g_lua_perf.script_hook_calls.load(std::memory_order_relaxed)));
+            lua.set_integer(static_cast<int64_t>(g_lua_perf.script_hook_matches.load(std::memory_order_relaxed)));
+            lua.set_integer(static_cast<int64_t>(g_lua_perf.construct_calls.load(std::memory_order_relaxed)));
+            lua.set_integer(static_cast<int64_t>(g_lua_perf.construct_matches.load(std::memory_order_relaxed)));
+            lua.set_integer(static_cast<int64_t>(g_lua_perf.engine_tick_ns.load(std::memory_order_relaxed)));
+            lua.set_integer(static_cast<int64_t>(g_lua_perf.engine_tick_calls.load(std::memory_order_relaxed)));
+            return 6;
+        });
+
+        // UE4SSScriptProfile(boolean): start / stop counting Blueprint function calls per function (stopping clears the counts).
+        lua.register_function("UE4SSScriptProfile", [](const LuaMadeSimple::Lua& lua) -> int {
+            const bool enable = lua_toboolean(lua.get_lua_state(), 1) != 0;
+            std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+            g_script_profile_enabled.store(enable, std::memory_order_relaxed);
+            if (!enable)
+            {
+                g_script_profile.clear();
+            }
+            return 0;
+        });
+
+        // UE4SSScriptProfileTake(integer max): returns an array of "<calls> <function full name>" strings, most called first,
+        // at most 'max' entries, and clears the counts. max <= 0 only clears (returns an empty table).
+        lua.register_function("UE4SSScriptProfileTake", [](const LuaMadeSimple::Lua& lua) -> int {
+            lua_State* L = lua.get_lua_state();
+            const auto max_entries = static_cast<int64_t>(lua_tointeger(L, 1));
+            std::vector<std::pair<Unreal::UFunction*, uint32_t>> entries{};
+            {
+                std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+                if (max_entries > 0)
+                {
+                    entries.assign(g_script_profile.begin(), g_script_profile.end());
+                }
+                g_script_profile.clear();
+            }
+            std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+                return a.second > b.second;
+            });
+            if (max_entries > 0 && static_cast<int64_t>(entries.size()) > max_entries)
+            {
+                entries.resize(static_cast<size_t>(max_entries));
+            }
+            lua_createtable(L, static_cast<int>(entries.size()), 0);
+            int index{};
+            for (const auto& [function, calls] : entries)
+            {
+                const auto line = std::to_string(calls) + " " + to_string(function->GetFullName());
+                lua_pushstring(L, line.c_str());
+                lua_rawseti(L, -2, ++index);
+            }
+            return 1;
+        });
+
         lua.register_function("CreateInvalidObject", [](const LuaMadeSimple::Lua& lua) -> int {
             LuaType::auto_construct_object(lua, nullptr);
             return 1;
@@ -1262,7 +1360,7 @@ Overloads:
             // Ignores any params after P1
             if (lua.is_string())
             {
-                Unreal::UObject* object = Unreal::UObjectGlobals::StaticFindObject(nullptr, nullptr, ensure_str(lua.get_string()));
+                Unreal::UObject* object = find_object_for_lua(nullptr, nullptr, ensure_str(lua.get_string()));
 
                 // Construct a Lua object of type 'UObject'
                 // Auto constructing is nullptr safe
@@ -1336,7 +1434,7 @@ Overloads:
             }
             // There's no error if P4 isn't a bool, simply ignore all parameters after P3
 
-            Unreal::UObject* object = Unreal::UObjectGlobals::StaticFindObject(param_class, param_in_outer, param_name, param_exact_class);
+            Unreal::UObject* object = find_object_for_lua(param_class, param_in_outer, param_name, param_exact_class);
 
             // Construct a Lua object of type 'UObject'
             // Auto constructing is nullptr safe
@@ -1761,7 +1859,7 @@ Overloads:
 
                 auto function_name_no_prefix = get_function_name_without_prefix(ensure_str(lua.get_string()));
 
-                Unreal::UFunction* unreal_function = Unreal::UObjectGlobals::StaticFindObject<Unreal::UFunction*>(nullptr, nullptr, function_name_no_prefix);
+                Unreal::UFunction* unreal_function = static_cast<Unreal::UFunction*>(find_object_for_lua(nullptr, nullptr, function_name_no_prefix));
                 if (!unreal_function)
                 {
                     lua.throw_error(std::format("Tried to unregister a hook with Lua function 'UnregisterHook' but no UFunction with the specified name "
@@ -4140,6 +4238,7 @@ Overloads:
                                  [[maybe_unused]] bool bIdle) -> void
     {
         std::lock_guard<std::recursive_mutex> execution_guard{LuaMod::m_game_thread_execution_mutex};
+        const auto perf_tick_start = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
             LuaMod::m_is_processing_actions = true;
@@ -4170,6 +4269,9 @@ Overloads:
                 LuaMod::m_pending_delayed_game_thread_actions.clear();
             }
         }
+        perf_add(g_lua_perf.engine_tick_ns,
+                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - perf_tick_start).count()));
+        perf_add(g_lua_perf.engine_tick_calls);
     }
 
     // Local convenience wrappers for Capabilities functions
@@ -4247,7 +4349,7 @@ Overloads:
                 has_post_callback = true;
             }
 
-            Unreal::UFunction* unreal_function = Unreal::UObjectGlobals::StaticFindObject<Unreal::UFunction*>(nullptr, nullptr, function_name_no_prefix);
+            Unreal::UFunction* unreal_function = static_cast<Unreal::UFunction*>(find_object_for_lua(nullptr, nullptr, function_name_no_prefix));
             if (!unreal_function)
             {
                 lua.throw_error(std::format(
@@ -6336,6 +6438,14 @@ Overloads:
     static auto script_hook([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::UObject* Context, Unreal::FFrame& Stack, [[maybe_unused]] void* RESULT_DECL) -> void
     {
         std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+        perf_add(g_lua_perf.script_hook_calls);
+        if (g_script_profile_enabled.load(std::memory_order_relaxed))
+        {
+            if (Unreal::UFunction* profiled_function = Stack.Node())
+            {
+                ++g_script_profile[profiled_function];
+            }
+        }
 
         auto execute_hook = [&](std::vector<LuaMod::FunctionHookData>& callback_container, bool precise_name_match) {
             if (callback_container.empty())
@@ -6347,10 +6457,28 @@ Overloads:
             {
                 return;
             }
+            // Every Blueprint function call of the game lands here. The precise match below builds a vector with the names of
+            // the function and all its outers (heap allocations) on each call, so test the function's own name first:
+            // when no hooked function has it there is nothing to do.
+            const auto node_name = node->GetNamePrivate();
+            bool leaf_name_is_hooked{};
+            for (const auto& entry : callback_container)
+            {
+                if (!entry.names.empty() && entry.names[0].Equals(node_name))
+                {
+                    leaf_name_is_hooked = true;
+                    break;
+                }
+            }
+            if (!leaf_name_is_hooked)
+            {
+                return;
+            }
             auto data = precise_name_match ? LuaMod::find_function_hook_data(callback_container, node)
-                                           : LuaMod::find_function_hook_data(callback_container, node->GetNamePrivate());
+                                           : LuaMod::find_function_hook_data(callback_container, node_name);
             if (data)
             {
+                perf_add(g_lua_perf.script_hook_matches);
                 const auto& callback_data = data->callback_data;
                 for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
                 {
@@ -6672,10 +6800,33 @@ Overloads:
                 // Lua is NOT thread-safe. If we're on the game thread, we can call Lua directly.
                 // If we're on another thread, we must queue the callback for later processing.
                 std::lock_guard<std::recursive_mutex> guard{LuaMod::m_thread_actions_mutex};
+                perf_add(g_lua_perf.construct_calls);
+                if (m_static_construct_object_lua_callbacks.empty())
+                {
+                    return constructed_object;
+                }
 
                 Unreal::UStruct* object_class = constructed_object->GetClassPrivate();
                 while (object_class)
                 {
+                    // This runs for every object the engine constructs, once per class in its inheritance chain. Nearly all
+                    // of them match no listener: test that before the dispatch code below, which allocates a vector and a set.
+                    bool class_has_listener{};
+                    for (const auto& callback_data : m_static_construct_object_lua_callbacks)
+                    {
+                        if (object_class->GetNamePrivate().Equals(callback_data.instance_class_name) && object_class->GetOuterPrivate()->GetNamePrivate().Equals(callback_data.instance_class_outer_name))
+                        {
+                            class_has_listener = true;
+                            break;
+                        }
+                    }
+                    if (!class_has_listener)
+                    {
+                        object_class = object_class->GetSuperStruct();
+                        continue;
+                    }
+                    perf_add(g_lua_perf.construct_matches);
+
                     if (Unreal::IsInGameThreadRaw())
                     {
                         // On game thread call Lua directly, but avoid iterator invalidation:
