@@ -1,0 +1,28 @@
+name: Build Shipping UE4SS (Game__Shipping__Win64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      use-clang:
+        description: 'Use Clang-CL compiler instead of MSVC'
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-shipping-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/cmake_build_ue4ss.yml
+    secrets: inherit
+    with:
+      build-mode: "Game__Shipping__Win64"
+      commit-sha: ${{ github.sha }}
+      should-upload-artifact: true
+      artifact-retention-days: "14"
+      enable-caching: true
+      use-clang: ${{ inputs.use-clang || false }}
+      build-ue4ss: true
+      build-cppmods: true
+      build-uvtd: false
