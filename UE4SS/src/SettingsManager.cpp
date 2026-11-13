@@ -255,6 +255,7 @@ namespace RC
         REGISTER_BOOL_SETTING(Hooks.HookProcessInternal, section_hooks, HookProcessInternal)
         REGISTER_BOOL_SETTING(Hooks.HookProcessLocalScriptFunction, section_hooks, HookProcessLocalScriptFunction)
         REGISTER_BOOL_SETTING(Hooks.HookLoadMap, section_hooks, HookLoadMap)
+        REGISTER_BOOL_SETTING(Hooks.HookLoadLibrary, section_hooks, HookLoadLibrary)
         REGISTER_BOOL_SETTING(Hooks.HookInitGameState, section_hooks, HookInitGameState)
         REGISTER_BOOL_SETTING(Hooks.HookCallFunctionByNameWithArguments, section_hooks, HookCallFunctionByNameWithArguments)
         REGISTER_BOOL_SETTING(Hooks.HookBeginPlay, section_hooks, HookBeginPlay)

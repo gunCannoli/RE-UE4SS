@@ -299,33 +299,36 @@ namespace RC
 
             Output::send(STR("UE4SS Build Configuration: {} ({})\n"), ensure_str(UE4SS_CONFIGURATION), UE4SS_COMPILER);
 
-            m_load_library_a_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
-                                                                   "LoadLibraryA",
-                                                                   std::bit_cast<uint64_t>(&HookedLoadLibraryA),
-                                                                   &m_hook_trampoline_load_library_a,
-                                                                   L"");
-            m_load_library_a_hook->hook();
+            if (settings_manager.Hooks.HookLoadLibrary)
+            {
+                m_load_library_a_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
+                                                                       "LoadLibraryA",
+                                                                       std::bit_cast<uint64_t>(&HookedLoadLibraryA),
+                                                                       &m_hook_trampoline_load_library_a,
+                                                                       L"");
+                m_load_library_a_hook->hook();
 
-            m_load_library_ex_a_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
-                                                                      "LoadLibraryExA",
-                                                                      std::bit_cast<uint64_t>(&HookedLoadLibraryExA),
-                                                                      &m_hook_trampoline_load_library_ex_a,
-                                                                      L"");
-            m_load_library_ex_a_hook->hook();
+                m_load_library_ex_a_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
+                                                                          "LoadLibraryExA",
+                                                                          std::bit_cast<uint64_t>(&HookedLoadLibraryExA),
+                                                                          &m_hook_trampoline_load_library_ex_a,
+                                                                          L"");
+                m_load_library_ex_a_hook->hook();
 
-            m_load_library_w_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
-                                                                   "LoadLibraryW",
-                                                                   std::bit_cast<uint64_t>(&HookedLoadLibraryW),
-                                                                   &m_hook_trampoline_load_library_w,
-                                                                   L"");
-            m_load_library_w_hook->hook();
+                m_load_library_w_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
+                                                                       "LoadLibraryW",
+                                                                       std::bit_cast<uint64_t>(&HookedLoadLibraryW),
+                                                                       &m_hook_trampoline_load_library_w,
+                                                                       L"");
+                m_load_library_w_hook->hook();
 
-            m_load_library_ex_w_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
-                                                                      "LoadLibraryExW",
-                                                                      std::bit_cast<uint64_t>(&HookedLoadLibraryExW),
-                                                                      &m_hook_trampoline_load_library_ex_w,
-                                                                      L"");
-            m_load_library_ex_w_hook->hook();
+                m_load_library_ex_w_hook = std::make_unique<PLH::IatHook>("kernel32.dll",
+                                                                          "LoadLibraryExW",
+                                                                          std::bit_cast<uint64_t>(&HookedLoadLibraryExW),
+                                                                          &m_hook_trampoline_load_library_ex_w,
+                                                                          L"");
+                m_load_library_ex_w_hook->hook();
+            }
 
             Unreal::UnrealInitializer::SetupUnrealModules();
 

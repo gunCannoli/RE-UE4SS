@@ -118,6 +118,9 @@ namespace RC
             bool HookProcessLocalScriptFunction{true};
             bool HookInitGameState{true};
             bool HookLoadMap{true};
+            // IAT hooks on the game exe's LoadLibrary* (only feed C++ mods' on_dll_load). Off: with them on, Wuchang
+            // loses the Steam Input pad and its custom cursor until an alt-tab.
+            bool HookLoadLibrary{false};
             bool HookCallFunctionByNameWithArguments{true};
             bool HookBeginPlay{true};
             bool HookEndPlay{true};
