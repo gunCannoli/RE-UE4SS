@@ -261,7 +261,7 @@ namespace RC
             //*/
 
             Output::send(STR("Console created\n"));
-            Output::send(STR("UE4SS - v{}.{}.{}{}{} - Git SHA #{}\n"),
+            Output::send(STR("UE4SS - v{}.{}.{}{}{} (WMM Fork) - Git SHA #{}\n"),
                          UE4SS_LIB_VERSION_MAJOR,
                          UE4SS_LIB_VERSION_MINOR,
                          UE4SS_LIB_VERSION_HOTFIX,
