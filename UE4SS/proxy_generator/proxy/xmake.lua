@@ -12,6 +12,7 @@ target("proxy")
     set_policy("build.across_targets_in_parallel", false)
 
     add_deps("File", "proxy_generator")
+    add_includedirs(".")
 
     add_files("proxy.rc")
 

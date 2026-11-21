@@ -49,6 +49,7 @@ add_library(${TARGET} SHARED
         "${CMAKE_CURRENT_BINARY_DIR}/${PROXY_NAME}.def")
 
 set_target_properties(${TARGET} PROPERTIES OUTPUT_NAME ${PROXY_NAME})
+target_include_directories(${TARGET} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(${TARGET} PRIVATE File)
 
 # Determine if we're using an export file or a DLL

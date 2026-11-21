@@ -211,6 +211,7 @@ int _tmain(int argc, TCHAR* argv[])
     cpp_file << "#include <Windows.h>" << endl;
     cpp_file << "#include <shellapi.h>" << endl;
     cpp_file << "#include <filesystem>" << endl;
+    cpp_file << "#include \"wmm_pak_enabler.hpp\"" << endl;
     cpp_file << endl;
     cpp_file << "#pragma comment(lib, \"user32.lib\")" << endl;
     cpp_file << "#pragma comment(lib, \"shell32.lib\")" << endl;
@@ -375,6 +376,18 @@ int _tmain(int argc, TCHAR* argv[])
     cpp_file << "}" << endl;
     cpp_file << endl;
 
+    cpp_file << "bool should_enable_unsigned_paks(HMODULE moduleHandle)" << endl;
+    cpp_file << "{" << endl;
+    cpp_file << "    wchar_t buf[1024]{L'\\0'};" << endl;
+    cpp_file << "    DWORD n = GetModuleFileNameW(moduleHandle, buf, 1024);" << endl;
+    cpp_file << "    while (n > 0 && buf[n - 1] != L'\\\\' && buf[n - 1] != L'/') --n;" << endl;
+    cpp_file << "    if (n > 0) buf[n - 1] = L'\\0'; else { buf[0] = L'.'; buf[1] = L'\\0'; }" << endl;
+    cpp_file << "    wchar_t ini_path[1088]{L'\\0'};" << endl;
+    cpp_file << "    std::swprintf(ini_path, 1088, L\"%ls\\\\ue4ss\\\\UE4SS-settings.ini\", buf);" << endl;
+    cpp_file << "    return GetPrivateProfileIntW(L\"General\", L\"EnableUnsignedPaks\", 0, ini_path) != 0;" << endl;
+    cpp_file << "}" << endl;
+    cpp_file << endl;
+
     cpp_file << "BOOL WINAPI DllMain(HMODULE hInstDll, DWORD fdwReason, LPVOID lpvReserved)" << endl;
     cpp_file << "{" << endl;
     cpp_file << "    if (fdwReason == DLL_PROCESS_ATTACH)" << endl;
@@ -387,6 +400,12 @@ int _tmain(int argc, TCHAR* argv[])
     cpp_file << "        {" << endl;
     cpp_file << "            // UE4SS is disabled, proxy will still forward calls to original DLL" << endl;
     cpp_file << "            return TRUE;" << endl;
+    cpp_file << "        }" << endl;
+    cpp_file << endl;
+    cpp_file << "        // Optional unsigned ~mods pak enabler (UE4SS-settings.ini: [General] EnableUnsignedPaks = 1)" << endl;
+    cpp_file << "        if (should_enable_unsigned_paks(hInstDll))" << endl;
+    cpp_file << "        {" << endl;
+    cpp_file << "            wmm::enable_unsigned_paks();" << endl;
     cpp_file << "        }" << endl;
     cpp_file << endl;
     cpp_file << "        HMODULE hUE4SSDll = load_ue4ss_dll(hInstDll);" << endl;
