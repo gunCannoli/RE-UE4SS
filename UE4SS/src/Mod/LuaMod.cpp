@@ -2679,7 +2679,7 @@ Overloads:
             auto mod = get_mod_ref(lua);
             if (!UE4SSProgram::settings_manager.Hooks.HookInitGameState)
             {
-                Output::send<LogLevel::Warning>(STR("[{}] RegisterInitGameStatePreHook called but HookInitGameState is disabled in settings.\n"), mod->get_mod_name());
+                Output::send<LogLevel::Warning>(STR("[{}] RegisterInitGameStatePreHook called but HookInitGameState is disabled in settings.\n"), mod->get_name());
                 return 0;
             }
 
@@ -2713,7 +2713,7 @@ Overloads:
             auto mod = get_mod_ref(lua);
             if (!UE4SSProgram::settings_manager.Hooks.HookInitGameState)
             {
-                Output::send<LogLevel::Warning>(STR("[{}] RegisterInitGameStatePostHook called but HookInitGameState is disabled in settings.\n"), mod->get_mod_name());
+                Output::send<LogLevel::Warning>(STR("[{}] RegisterInitGameStatePostHook called but HookInitGameState is disabled in settings.\n"), mod->get_name());
                 return 0;
             }
 
