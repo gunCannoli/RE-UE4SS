@@ -2677,6 +2677,12 @@ Overloads:
             }
 
             auto mod = get_mod_ref(lua);
+            if (!UE4SSProgram::settings_manager.Hooks.HookInitGameState)
+            {
+                Output::send<LogLevel::Warning>(STR("[{}] RegisterInitGameStatePreHook called but HookInitGameState is disabled in settings.\n"), mod->get_mod_name());
+                return 0;
+            }
+
             auto hook_lua = get_hook_lua(mod);
 
             lua_xmove(lua.get_lua_state(), hook_lua->get_lua_state(), 1);
@@ -2705,6 +2711,12 @@ Overloads:
             }
 
             auto mod = get_mod_ref(lua);
+            if (!UE4SSProgram::settings_manager.Hooks.HookInitGameState)
+            {
+                Output::send<LogLevel::Warning>(STR("[{}] RegisterInitGameStatePostHook called but HookInitGameState is disabled in settings.\n"), mod->get_mod_name());
+                return 0;
+            }
+
             auto hook_lua = get_hook_lua(mod);
 
             lua_xmove(lua.get_lua_state(), hook_lua->get_lua_state(), 1);
@@ -6795,39 +6807,42 @@ Overloads:
                     });
                 }, common_opts);
 
-        Unreal::Hook::RegisterInitGameStatePreCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AGameModeBase* Context) {
-            TRY([&] {
-                for (const auto& callback_data : m_init_game_state_pre_callbacks)
-                {
-                    for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+        if (UE4SSProgram::settings_manager.Hooks.HookInitGameState)
+        {
+            Unreal::Hook::RegisterInitGameStatePreCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AGameModeBase* Context) {
+                TRY([&] {
+                    for (const auto& callback_data : m_init_game_state_pre_callbacks)
                     {
-                        const auto& lua = *lua_ptr;
+                        for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+                        {
+                            const auto& lua = *lua_ptr;
 
-                        lua.registry().get_function_ref(registry_index.lua_index);
-                        static auto s_object_property_name = Unreal::FName(STR("ObjectProperty"), Unreal::FNAME_Find);
-                        LuaType::RemoteUnrealParam::construct(lua, &Context, s_object_property_name);
-                        lua.call_function(1, 0);
+                            lua.registry().get_function_ref(registry_index.lua_index);
+                            static auto s_object_property_name = Unreal::FName(STR("ObjectProperty"), Unreal::FNAME_Find);
+                            LuaType::RemoteUnrealParam::construct(lua, &Context, s_object_property_name);
+                            lua.call_function(1, 0);
+                        }
                     }
-                }
-            });
-        }, common_opts);
+                });
+            }, common_opts);
 
-        Unreal::Hook::RegisterInitGameStatePostCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AGameModeBase* Context) {
-            TRY([&] {
-                for (const auto& callback_data : m_init_game_state_post_callbacks)
-                {
-                    for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+            Unreal::Hook::RegisterInitGameStatePostCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AGameModeBase* Context) {
+                TRY([&] {
+                    for (const auto& callback_data : m_init_game_state_post_callbacks)
                     {
-                        const auto& lua = *lua_ptr;
+                        for (const auto& [lua_ptr, registry_index] : callback_data.registry_indexes)
+                        {
+                            const auto& lua = *lua_ptr;
 
-                        lua.registry().get_function_ref(registry_index.lua_index);
-                        static auto s_object_property_name = Unreal::FName(STR("ObjectProperty"), Unreal::FNAME_Find);
-                        LuaType::RemoteUnrealParam::construct(lua, &Context, s_object_property_name);
-                        lua.call_function(1, 0);
+                            lua.registry().get_function_ref(registry_index.lua_index);
+                            static auto s_object_property_name = Unreal::FName(STR("ObjectProperty"), Unreal::FNAME_Find);
+                            LuaType::RemoteUnrealParam::construct(lua, &Context, s_object_property_name);
+                            lua.call_function(1, 0);
+                        }
                     }
-                }
-            });
-        }, common_opts);
+                });
+            }, common_opts);
+        }
 
         Unreal::Hook::RegisterBeginPlayPreCallback([]([[maybe_unused]] Unreal::Hook::TCallbackIterationData<void>& CallbackIterationData, [[maybe_unused]] Unreal::AActor* Context) {
             TRY([&] {
